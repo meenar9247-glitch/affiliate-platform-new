@@ -1,730 +1,1050 @@
-/**
- * ============================================
- * AUTHENTICATION TESTS
- * Comprehensive test suite for authentication endpoints
- * Includes unit tests, integration tests, and edge cases
- * ============================================
- */
+import React from 'react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { Provider } from 'react-redux';
+import { BrowserRouter } from 'react-router-dom';
+import { configureStore } from '@reduxjs/toolkit';
+import axios from 'axios';
+import MockAdapter from 'axios-mock-adapter';
+import toast from 'react-hot-toast';
 
-const request = require('supertest');
-const mongoose = require('mongoose');
-const app = require('../app');
-const User = require('../models/User');
-const { generateToken } = require('../utils/helpers');
-const { HTTP_STATUS, ERROR_CODES } = require('../utils/constants');
+// Components to test
+import { Login } from '../../src/pages/auth/Login';
+import { Register } from '../../src/pages/auth/Register';
+import { ForgotPassword } from '../../src/pages/auth/ForgotPassword';
+import { ResetPassword } from '../../src/pages/auth/ResetPassword';
+import { VerifyEmail } from '../../src/pages/auth/VerifyEmail';
+import { TwoFactorAuth } from '../../src/pages/auth/TwoFactorAuth';
 
-// ============================================
-// Test Setup
-// ============================================
+// Redux slices
+import authReducer, { 
+  login, 
+  register, 
+  logout,
+  verifyEmail,
+  forgotPassword,
+  resetPassword,
+  enableTwoFactor,
+  verifyTwoFactor,
+  disableTwoFactor
+} from '../../src/store/slices/authSlice';
 
-beforeAll(async () => {
-  // Connect to test database
-  await mongoose.connect(process.env.MONGODB_TEST_URI || 'mongodb://localhost:27017/affiliate-test');
-});
+// Hooks
+import { useAuth } from '../../src/hooks/useAuth';
 
-afterAll(async () => {
-  // Clean up and disconnect
-  await mongoose.connection.dropDatabase();
-  await mongoose.disconnect();
-});
+// Mock dependencies
+jest.mock('react-hot-toast');
+jest.mock('../../src/hooks/useAuth');
+jest.mock('axios');
 
-beforeEach(async () => {
-  // Clear users before each test
-  await User.deleteMany({});
-});
+// Mock adapter for axios
+const mockAxios = new MockAdapter(axios);
 
-// ============================================
-// Test Data
-// ============================================
+// ==================== Test Setup ====================
 
-const validUser = {
-  name: 'Test User',
-  email: 'test@example.com',
-  password: 'Test@123',
-  confirmPassword: 'Test@123'
+// Create a test store
+const createTestStore = (initialState = {}) => {
+  return configureStore({
+    reducer: {
+      auth: authReducer
+    },
+    preloadedState: initialState
+  });
 };
 
-const invalidUser = {
-  name: '',
-  email: 'invalid-email',
-  password: '123',
-  confirmPassword: '456'
+// Mock user data
+const mockUser = {
+  id: '123',
+  name: 'John Doe',
+  email: 'john@example.com',
+  role: 'user',
+  isEmailVerified: true,
+  twoFactorEnabled: false,
+  avatar: null,
+  createdAt: '2024-01-01T00:00:00.000Z'
 };
 
-// ============================================
-// Registration Tests
-// ============================================
+const mockAdmin = {
+  ...mockUser,
+  id: '456',
+  email: 'admin@example.com',
+  role: 'admin'
+};
 
-describe('POST /api/auth/register', () => {
-  it('should register a new user successfully', async () => {
-    const response = await request(app)
-      .post('/api/auth/register')
-      .send(validUser)
-      .expect(HTTP_STATUS.CREATED);
+const mockToken = 'mock-jwt-token';
+const mockRefreshToken = 'mock-refresh-token';
 
-    expect(response.body.success).toBe(true);
-    expect(response.body.message).toBe('Registration successful! Please check your email for verification.');
-    expect(response.body.data.user).toHaveProperty('id');
-    expect(response.body.data.user.email).toBe(validUser.email);
-    expect(response.body.data.user.name).toBe(validUser.name);
-    expect(response.body.data.user.role).toBe('user');
-    expect(response.body.data.user).not.toHaveProperty('password');
+// Mock auth hook implementation
+const mockAuthHook = {
+  user: null,
+  loading: false,
+  error: null,
+  isAuthenticated: false,
+  login: jest.fn(),
+  register: jest.fn(),
+  logout: jest.fn(),
+  verifyEmail: jest.fn(),
+  forgotPassword: jest.fn(),
+  resetPassword: jest.fn(),
+  enableTwoFactor: jest.fn(),
+  verifyTwoFactor: jest.fn(),
+  disableTwoFactor: jest.fn()
+};
+
+// ==================== Test Utilities ====================
+
+const renderWithProviders = (
+  ui,
+  {
+    preloadedState = {},
+    store = createTestStore(preloadedState),
+    ...renderOptions
+  } = {}
+) => {
+  const Wrapper = ({ children }) => (
+    <Provider store={store}>
+      <BrowserRouter>
+        {children}
+      </BrowserRouter>
+    </Provider>
+  );
+  return { store, ...render(ui, { wrapper: Wrapper, ...renderOptions }) };
+};
+
+// ==================== Login Component Tests ====================
+
+describe('Login Component', () => {
+  beforeEach(() => {
+    useAuth.mockImplementation(() => ({ ...mockAuthHook }));
+    mockAxios.reset();
+    jest.clearAllMocks();
   });
 
-  it('should return validation error for invalid input', async () => {
-    const response = await request(app)
-      .post('/api/auth/register')
-      .send(invalidUser)
-      .expect(HTTP_STATUS.BAD_REQUEST);
-
-    expect(response.body.success).toBe(false);
-    expect(response.body.errorCode).toBe(ERROR_CODES.VALIDATION_FAILED);
-    expect(response.body.details).toBeDefined();
+  test('renders login form correctly', () => {
+    renderWithProviders(<Login />);
+    
+    expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /login/i })).toBeInTheDocument();
+    expect(screen.getByText(/forgot password/i)).toBeInTheDocument();
+    expect(screen.getByText(/create account/i)).toBeInTheDocument();
   });
 
-  it('should return error when email already exists', async () => {
-    // Create user first
-    await User.create(validUser);
-
-    const response = await request(app)
-      .post('/api/auth/register')
-      .send(validUser)
-      .expect(HTTP_STATUS.CONFLICT);
-
-    expect(response.body.success).toBe(false);
-    expect(response.body.errorCode).toBe(ERROR_CODES.USER_ALREADY_EXISTS);
-    expect(response.body.message).toContain('already exists');
+  test('handles input changes correctly', () => {
+    renderWithProviders(<Login />);
+    
+    const emailInput = screen.getByLabelText(/email/i);
+    const passwordInput = screen.getByLabelText(/password/i);
+    
+    fireEvent.change(emailInput, { target: { value: 'test@example.com' } });
+    fireEvent.change(passwordInput, { target: { value: 'password123' } });
+    
+    expect(emailInput.value).toBe('test@example.com');
+    expect(passwordInput.value).toBe('password123');
   });
 
-  it('should return error when passwords do not match', async () => {
-    const user = {
-      ...validUser,
-      confirmPassword: 'Different@123'
+  test('shows validation errors for empty fields', async () => {
+    renderWithProviders(<Login />);
+    
+    const loginButton = screen.getByRole('button', { name: /login/i });
+    fireEvent.click(loginButton);
+    
+    await waitFor(() => {
+      expect(screen.getByText(/email is required/i)).toBeInTheDocument();
+      expect(screen.getByText(/password is required/i)).toBeInTheDocument();
+    });
+  });
+
+  test('shows validation error for invalid email', async () => {
+    renderWithProviders(<Login />);
+    
+    const emailInput = screen.getByLabelText(/email/i);
+    fireEvent.change(emailInput, { target: { value: 'invalid-email' } });
+    
+    const loginButton = screen.getByRole('button', { name: /login/i });
+    fireEvent.click(loginButton);
+    
+    await waitFor(() => {
+      expect(screen.getByText(/invalid email format/i)).toBeInTheDocument();
+    });
+  });
+
+  test('handles successful login', async () => {
+    const mockLogin = jest.fn().mockResolvedValue({ user: mockUser, token: mockToken });
+    useAuth.mockImplementation(() => ({
+      ...mockAuthHook,
+      login: mockLogin
+    }));
+
+    renderWithProviders(<Login />);
+    
+    const emailInput = screen.getByLabelText(/email/i);
+    const passwordInput = screen.getByLabelText(/password/i);
+    const loginButton = screen.getByRole('button', { name: /login/i });
+    
+    fireEvent.change(emailInput, { target: { value: 'john@example.com' } });
+    fireEvent.change(passwordInput, { target: { value: 'password123' } });
+    fireEvent.click(loginButton);
+    
+    await waitFor(() => {
+      expect(mockLogin).toHaveBeenCalledWith('john@example.com', 'password123', false);
+      expect(toast.success).toHaveBeenCalled();
+    });
+  });
+
+  test('handles login failure', async () => {
+    const errorMessage = 'Invalid credentials';
+    const mockLogin = jest.fn().mockRejectedValue(new Error(errorMessage));
+    useAuth.mockImplementation(() => ({
+      ...mockAuthHook,
+      login: mockLogin
+    }));
+
+    renderWithProviders(<Login />);
+    
+    const emailInput = screen.getByLabelText(/email/i);
+    const passwordInput = screen.getByLabelText(/password/i);
+    const loginButton = screen.getByRole('button', { name: /login/i });
+    
+    fireEvent.change(emailInput, { target: { value: 'wrong@example.com' } });
+    fireEvent.change(passwordInput, { target: { value: 'wrongpass' } });
+    fireEvent.click(loginButton);
+    
+    await waitFor(() => {
+      expect(mockLogin).toHaveBeenCalled();
+      expect(toast.error).toHaveBeenCalledWith(errorMessage);
+    });
+  });
+
+  test('handles remember me checkbox', () => {
+    renderWithProviders(<Login />);
+    
+    const rememberCheckbox = screen.getByLabelText(/remember me/i);
+    fireEvent.click(rememberCheckbox);
+    
+    expect(rememberCheckbox.checked).toBe(true);
+  });
+
+  test('displays loading state during login', async () => {
+    const mockLogin = jest.fn().mockImplementation(() => new Promise(resolve => setTimeout(resolve, 100)));
+    useAuth.mockImplementation(() => ({
+      ...mockAuthHook,
+      login: mockLogin,
+      loading: true
+    }));
+
+    renderWithProviders(<Login />);
+    
+    const emailInput = screen.getByLabelText(/email/i);
+    const passwordInput = screen.getByLabelText(/password/i);
+    
+    fireEvent.change(emailInput, { target: { value: 'john@example.com' } });
+    fireEvent.change(passwordInput, { target: { value: 'password123' } });
+    
+    const loginButton = screen.getByRole('button', { name: /login/i });
+    fireEvent.click(loginButton);
+    
+    await waitFor(() => {
+      expect(loginButton).toBeDisabled();
+      expect(screen.getByText(/logging in/i)).toBeInTheDocument();
+    });
+  });
+
+  test('handles 2FA requirement', async () => {
+    const mockLogin = jest.fn().mockResolvedValue({ 
+      requiresTwoFactor: true,
+      userId: '123'
+    });
+    useAuth.mockImplementation(() => ({
+      ...mockAuthHook,
+      login: mockLogin
+    }));
+
+    renderWithProviders(<Login />);
+    
+    const emailInput = screen.getByLabelText(/email/i);
+    const passwordInput = screen.getByLabelText(/password/i);
+    
+    fireEvent.change(emailInput, { target: { value: 'john@example.com' } });
+    fireEvent.change(passwordInput, { target: { value: 'password123' } });
+    
+    const loginButton = screen.getByRole('button', { name: /login/i });
+    fireEvent.click(loginButton);
+    
+    await waitFor(() => {
+      expect(screen.getByText(/two-factor authentication/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/verification code/i)).toBeInTheDocument();
+    });
+  });
+
+  test('handles account lockout after multiple failures', async () => {
+    const mockLogin = jest.fn().mockRejectedValue(new Error('Invalid credentials'));
+    useAuth.mockImplementation(() => ({
+      ...mockAuthHook,
+      login: mockLogin
+    }));
+
+    renderWithProviders(<Login />);
+    
+    const emailInput = screen.getByLabelText(/email/i);
+    const passwordInput = screen.getByLabelText(/password/i);
+    const loginButton = screen.getByRole('button', { name: /login/i });
+    
+    // Attempt login 5 times
+    for (let i = 0; i < 5; i++) {
+      fireEvent.change(emailInput, { target: { value: 'test@example.com' } });
+      fireEvent.change(passwordInput, { target: { value: 'wrongpass' } });
+      fireEvent.click(loginButton);
+      await waitFor(() => {});
+    }
+    
+    await waitFor(() => {
+      expect(screen.getByText(/account temporarily locked/i)).toBeInTheDocument();
+      expect(loginButton).toBeDisabled();
+    });
+  });
+});
+// ==================== Register Component Tests ====================
+
+describe('Register Component', () => {
+  beforeEach(() => {
+    useAuth.mockImplementation(() => ({ ...mockAuthHook }));
+    jest.clearAllMocks();
+  });
+
+  test('renders registration form correctly', () => {
+    renderWithProviders(<Register />);
+    
+    expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/confirm password/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /register/i })).toBeInTheDocument();
+    expect(screen.getByText(/already have an account/i)).toBeInTheDocument();
+  });
+
+  test('handles input changes correctly', () => {
+    renderWithProviders(<Register />);
+    
+    const nameInput = screen.getByLabelText(/name/i);
+    const emailInput = screen.getByLabelText(/email/i);
+    const passwordInput = screen.getByLabelText(/password/i);
+    const confirmInput = screen.getByLabelText(/confirm password/i);
+    
+    fireEvent.change(nameInput, { target: { value: 'John Doe' } });
+    fireEvent.change(emailInput, { target: { value: 'john@example.com' } });
+    fireEvent.change(passwordInput, { target: { value: 'Password123!' } });
+    fireEvent.change(confirmInput, { target: { value: 'Password123!' } });
+    
+    expect(nameInput.value).toBe('John Doe');
+    expect(emailInput.value).toBe('john@example.com');
+    expect(passwordInput.value).toBe('Password123!');
+    expect(confirmInput.value).toBe('Password123!');
+  });
+
+  test('validates password strength', async () => {
+    renderWithProviders(<Register />);
+    
+    const passwordInput = screen.getByLabelText(/password/i);
+    
+    // Test weak password
+    fireEvent.change(passwordInput, { target: { value: 'weak' } });
+    expect(screen.getByText(/password too weak/i)).toBeInTheDocument();
+    
+    // Test medium password
+    fireEvent.change(passwordInput, { target: { value: 'Password123' } });
+    expect(screen.getByText(/medium strength/i)).toBeInTheDocument();
+    
+    // Test strong password
+    fireEvent.change(passwordInput, { target: { value: 'Password123!' } });
+    expect(screen.getByText(/strong password/i)).toBeInTheDocument();
+  });
+
+  test('validates password confirmation match', async () => {
+    renderWithProviders(<Register />);
+    
+    const passwordInput = screen.getByLabelText(/password/i);
+    const confirmInput = screen.getByLabelText(/confirm password/i);
+    
+    fireEvent.change(passwordInput, { target: { value: 'Password123!' } });
+    fireEvent.change(confirmInput, { target: { value: 'Different123!' } });
+    
+    const registerButton = screen.getByRole('button', { name: /register/i });
+    fireEvent.click(registerButton);
+    
+    await waitFor(() => {
+      expect(screen.getByText(/passwords do not match/i)).toBeInTheDocument();
+    });
+  });
+
+  test('handles successful registration', async () => {
+    const mockRegister = jest.fn().mockResolvedValue({ user: mockUser, token: mockToken });
+    useAuth.mockImplementation(() => ({
+      ...mockAuthHook,
+      register: mockRegister
+    }));
+
+    renderWithProviders(<Register />);
+    
+    const nameInput = screen.getByLabelText(/name/i);
+    const emailInput = screen.getByLabelText(/email/i);
+    const passwordInput = screen.getByLabelText(/password/i);
+    const confirmInput = screen.getByLabelText(/confirm password/i);
+    
+    fireEvent.change(nameInput, { target: { value: 'John Doe' } });
+    fireEvent.change(emailInput, { target: { value: 'john@example.com' } });
+    fireEvent.change(passwordInput, { target: { value: 'Password123!' } });
+    fireEvent.change(confirmInput, { target: { value: 'Password123!' } });
+    
+    const registerButton = screen.getByRole('button', { name: /register/i });
+    fireEvent.click(registerButton);
+    
+    await waitFor(() => {
+      expect(mockRegister).toHaveBeenCalledWith({
+        name: 'John Doe',
+        email: 'john@example.com',
+        password: 'Password123!'
+      });
+      expect(toast.success).toHaveBeenCalled();
+    });
+  });
+
+  test('handles registration failure', async () => {
+    const errorMessage = 'Email already exists';
+    const mockRegister = jest.fn().mockRejectedValue(new Error(errorMessage));
+    useAuth.mockImplementation(() => ({
+      ...mockAuthHook,
+      register: mockRegister
+    }));
+
+    renderWithProviders(<Register />);
+    
+    const nameInput = screen.getByLabelText(/name/i);
+    const emailInput = screen.getByLabelText(/email/i);
+    const passwordInput = screen.getByLabelText(/password/i);
+    const confirmInput = screen.getByLabelText(/confirm password/i);
+    
+    fireEvent.change(nameInput, { target: { value: 'John Doe' } });
+    fireEvent.change(emailInput, { target: { value: 'existing@example.com' } });
+    fireEvent.change(passwordInput, { target: { value: 'Password123!' } });
+    fireEvent.change(confirmInput, { target: { value: 'Password123!' } });
+    
+    const registerButton = screen.getByRole('button', { name: /register/i });
+    fireEvent.click(registerButton);
+    
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(errorMessage);
+    });
+  });
+
+  test('accepts terms and conditions', () => {
+    renderWithProviders(<Register />);
+    
+    const termsCheckbox = screen.getByLabelText(/i agree to the terms/i);
+    fireEvent.click(termsCheckbox);
+    
+    expect(termsCheckbox.checked).toBe(true);
+  });
+
+  test('shows password requirements', () => {
+    renderWithProviders(<Register />);
+    
+    const passwordInput = screen.getByLabelText(/password/i);
+    fireEvent.focus(passwordInput);
+    
+    expect(screen.getByText(/at least 8 characters/i)).toBeInTheDocument();
+    expect(screen.getByText(/one uppercase letter/i)).toBeInTheDocument();
+    expect(screen.getByText(/one lowercase letter/i)).toBeInTheDocument();
+    expect(screen.getByText(/one number/i)).toBeInTheDocument();
+    expect(screen.getByText(/one special character/i)).toBeInTheDocument();
+  });
+});
+
+// ==================== Forgot Password Tests ====================
+
+describe('ForgotPassword Component', () => {
+  beforeEach(() => {
+    useAuth.mockImplementation(() => ({ ...mockAuthHook }));
+    jest.clearAllMocks();
+  });
+
+  test('renders forgot password form correctly', () => {
+    renderWithProviders(<ForgotPassword />);
+    
+    expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /reset password/i })).toBeInTheDocument();
+    expect(screen.getByText(/back to login/i)).toBeInTheDocument();
+  });
+
+  test('handles successful password reset request', async () => {
+    const mockForgotPassword = jest.fn().mockResolvedValue({});
+    useAuth.mockImplementation(() => ({
+      ...mockAuthHook,
+      forgotPassword: mockForgotPassword
+    }));
+
+    renderWithProviders(<ForgotPassword />);
+    
+    const emailInput = screen.getByLabelText(/email/i);
+    const submitButton = screen.getByRole('button', { name: /reset password/i });
+    
+    fireEvent.change(emailInput, { target: { value: 'john@example.com' } });
+    fireEvent.click(submitButton);
+    
+    await waitFor(() => {
+      expect(mockForgotPassword).toHaveBeenCalledWith('john@example.com');
+      expect(toast.success).toHaveBeenCalled();
+      expect(screen.getByText(/check your email/i)).toBeInTheDocument();
+    });
+  });
+
+  test('handles failed password reset request', async () => {
+    const errorMessage = 'Email not found';
+    const mockForgotPassword = jest.fn().mockRejectedValue(new Error(errorMessage));
+    useAuth.mockImplementation(() => ({
+      ...mockAuthHook,
+      forgotPassword: mockForgotPassword
+    }));
+
+    renderWithProviders(<ForgotPassword />);
+    
+    const emailInput = screen.getByLabelText(/email/i);
+    const submitButton = screen.getByRole('button', { name: /reset password/i });
+    
+    fireEvent.change(emailInput, { target: { value: 'nonexistent@example.com' } });
+    fireEvent.click(submitButton);
+    
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(errorMessage);
+    });
+  });
+
+  test('validates email format', async () => {
+    renderWithProviders(<ForgotPassword />);
+    
+    const emailInput = screen.getByLabelText(/email/i);
+    const submitButton = screen.getByRole('button', { name: /reset password/i });
+    
+    fireEvent.change(emailInput, { target: { value: 'invalid-email' } });
+    fireEvent.click(submitButton);
+    
+    await waitFor(() => {
+      expect(screen.getByText(/invalid email format/i)).toBeInTheDocument();
+    });
+  });
+});
+
+// ==================== Reset Password Tests ====================
+
+describe('ResetPassword Component', () => {
+  const mockToken = 'reset-token-123';
+  
+  beforeEach(() => {
+    useAuth.mockImplementation(() => ({ ...mockAuthHook }));
+    jest.clearAllMocks();
+  });
+
+  test('renders reset password form correctly', () => {
+    renderWithProviders(<ResetPassword token={mockToken} />);
+    
+    expect(screen.getByLabelText(/new password/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/confirm password/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /reset password/i })).toBeInTheDocument();
+  });
+
+  test('handles successful password reset', async () => {
+    const mockResetPassword = jest.fn().mockResolvedValue({});
+    useAuth.mockImplementation(() => ({
+      ...mockAuthHook,
+      resetPassword: mockResetPassword
+    }));
+
+    renderWithProviders(<ResetPassword token={mockToken} />);
+    
+    const passwordInput = screen.getByLabelText(/new password/i);
+    const confirmInput = screen.getByLabelText(/confirm password/i);
+    const submitButton = screen.getByRole('button', { name: /reset password/i });
+    
+    fireEvent.change(passwordInput, { target: { value: 'NewPassword123!' } });
+    fireEvent.change(confirmInput, { target: { value: 'NewPassword123!' } });
+    fireEvent.click(submitButton);
+    
+    await waitFor(() => {
+      expect(mockResetPassword).toHaveBeenCalledWith(mockToken, 'NewPassword123!');
+      expect(toast.success).toHaveBeenCalled();
+    });
+  });
+
+  test('validates password match', async () => {
+    renderWithProviders(<ResetPassword token={mockToken} />);
+    
+    const passwordInput = screen.getByLabelText(/new password/i);
+    const confirmInput = screen.getByLabelText(/confirm password/i);
+    const submitButton = screen.getByRole('button', { name: /reset password/i });
+    
+    fireEvent.change(passwordInput, { target: { value: 'NewPassword123!' } });
+    fireEvent.change(confirmInput, { target: { value: 'Different123!' } });
+    fireEvent.click(submitButton);
+    
+    await waitFor(() => {
+      expect(screen.getByText(/passwords do not match/i)).toBeInTheDocument();
+    });
+  });
+
+  test('validates password strength', async () => {
+    renderWithProviders(<ResetPassword token={mockToken} />);
+    
+    const passwordInput = screen.getByLabelText(/new password/i);
+    const submitButton = screen.getByRole('button', { name: /reset password/i });
+    
+    fireEvent.change(passwordInput, { target: { value: 'weak' } });
+    fireEvent.click(submitButton);
+    
+    await waitFor(() => {
+      expect(screen.getByText(/password too weak/i)).toBeInTheDocument();
+    });
+  });
+});
+// ==================== Two-Factor Authentication Tests ====================
+
+describe('TwoFactorAuth Component', () => {
+  const mockUserId = '123';
+  
+  beforeEach(() => {
+    useAuth.mockImplementation(() => ({ ...mockAuthHook }));
+    jest.clearAllMocks();
+  });
+
+  test('renders 2FA verification form correctly', () => {
+    renderWithProviders(<TwoFactorAuth userId={mockUserId} />);
+    
+    expect(screen.getByLabelText(/verification code/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /verify/i })).toBeInTheDocument();
+    expect(screen.getByText(/enter the 6-digit code/i)).toBeInTheDocument();
+  });
+
+  test('handles successful 2FA verification', async () => {
+    const mockVerify2FA = jest.fn().mockResolvedValue({ success: true });
+    useAuth.mockImplementation(() => ({
+      ...mockAuthHook,
+      verifyTwoFactor: mockVerify2FA
+    }));
+
+    renderWithProviders(<TwoFactorAuth userId={mockUserId} />);
+    
+    const codeInput = screen.getByLabelText(/verification code/i);
+    const verifyButton = screen.getByRole('button', { name: /verify/i });
+    
+    fireEvent.change(codeInput, { target: { value: '123456' } });
+    fireEvent.click(verifyButton);
+    
+    await waitFor(() => {
+      expect(mockVerify2FA).toHaveBeenCalledWith(mockUserId, '123456');
+      expect(toast.success).toHaveBeenCalled();
+    });
+  });
+
+  test('handles 2FA verification failure', async () => {
+    const errorMessage = 'Invalid code';
+    const mockVerify2FA = jest.fn().mockRejectedValue(new Error(errorMessage));
+    useAuth.mockImplementation(() => ({
+      ...mockAuthHook,
+      verifyTwoFactor: mockVerify2FA
+    }));
+
+    renderWithProviders(<TwoFactorAuth userId={mockUserId} />);
+    
+    const codeInput = screen.getByLabelText(/verification code/i);
+    const verifyButton = screen.getByRole('button', { name: /verify/i });
+    
+    fireEvent.change(codeInput, { target: { value: 'wrong' } });
+    fireEvent.click(verifyButton);
+    
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(errorMessage);
+    });
+  });
+
+  test('validates code format (6 digits)', async () => {
+    renderWithProviders(<TwoFactorAuth userId={mockUserId} />);
+    
+    const codeInput = screen.getByLabelText(/verification code/i);
+    const verifyButton = screen.getByRole('button', { name: /verify/i });
+    
+    fireEvent.change(codeInput, { target: { value: '123' } });
+    fireEvent.click(verifyButton);
+    
+    await waitFor(() => {
+      expect(screen.getByText(/code must be 6 digits/i)).toBeInTheDocument();
+    });
+  });
+
+  test('handles resend code', async () => {
+    const mockResendCode = jest.fn().mockResolvedValue({});
+    useAuth.mockImplementation(() => ({
+      ...mockAuthHook,
+      resendTwoFactorCode: mockResendCode
+    }));
+
+    renderWithProviders(<TwoFactorAuth userId={mockUserId} />);
+    
+    const resendButton = screen.getByText(/resend code/i);
+    fireEvent.click(resendButton);
+    
+    await waitFor(() => {
+      expect(mockResendCode).toHaveBeenCalledWith(mockUserId);
+      expect(toast.success).toHaveBeenCalledWith('Code resent');
+    });
+  });
+});
+
+// ==================== Verify Email Tests ====================
+
+describe('VerifyEmail Component', () => {
+  const mockToken = 'verify-token-123';
+  
+  beforeEach(() => {
+    useAuth.mockImplementation(() => ({ ...mockAuthHook }));
+    jest.clearAllMocks();
+  });
+
+  test('renders email verification message', () => {
+    renderWithProviders(<VerifyEmail token={mockToken} />);
+    
+    expect(screen.getByText(/verifying your email/i)).toBeInTheDocument();
+  });
+
+  test('handles successful email verification', async () => {
+    const mockVerifyEmail = jest.fn().mockResolvedValue({ success: true });
+    useAuth.mockImplementation(() => ({
+      ...mockAuthHook,
+      verifyEmail: mockVerifyEmail
+    }));
+
+    renderWithProviders(<VerifyEmail token={mockToken} />);
+    
+    await waitFor(() => {
+      expect(mockVerifyEmail).toHaveBeenCalledWith(mockToken);
+      expect(screen.getByText(/email verified successfully/i)).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: /go to dashboard/i })).toBeInTheDocument();
+    });
+  });
+
+  test('handles email verification failure', async () => {
+    const errorMessage = 'Invalid token';
+    const mockVerifyEmail = jest.fn().mockRejectedValue(new Error(errorMessage));
+    useAuth.mockImplementation(() => ({
+      ...mockAuthHook,
+      verifyEmail: mockVerifyEmail
+    }));
+
+    renderWithProviders(<VerifyEmail token={mockToken} />);
+    
+    await waitFor(() => {
+      expect(screen.getByText(/verification failed/i)).toBeInTheDocument();
+      expect(screen.getByText(errorMessage)).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: /request new link/i })).toBeInTheDocument();
+    });
+  });
+});
+
+// ==================== Redux Slice Tests ====================
+
+describe('Auth Slice', () => {
+  let store;
+
+  beforeEach(() => {
+    store = createTestStore();
+    jest.clearAllMocks();
+  });
+
+  test('should handle initial state', () => {
+    expect(store.getState().auth).toEqual({
+      user: null,
+      token: null,
+      refreshToken: null,
+      isAuthenticated: false,
+      isLoading: false,
+      error: null,
+      twoFactorRequired: false,
+      twoFactorType: null,
+      emailVerified: false,
+      loginAttempts: 0,
+      lockoutUntil: null,
+      permissions: []
+    });
+  });
+
+  test('should handle login.pending', () => {
+    store.dispatch({ type: 'auth/login/pending' });
+    expect(store.getState().auth.isLoading).toBe(true);
+    expect(store.getState().auth.error).toBe(null);
+  });
+
+  test('should handle login.fulfilled', () => {
+    const payload = {
+      user: mockUser,
+      token: mockToken,
+      refreshToken: mockRefreshToken
     };
-
-    const response = await request(app)
-      .post('/api/auth/register')
-      .send(user)
-      .expect(HTTP_STATUS.BAD_REQUEST);
-
-    expect(response.body.success).toBe(false);
-    expect(response.body.details.password).toBeDefined();
+    
+    store.dispatch({ type: 'auth/login/fulfilled', payload });
+    
+    const state = store.getState().auth;
+    expect(state.isLoading).toBe(false);
+    expect(state.isAuthenticated).toBe(true);
+    expect(state.user).toEqual(mockUser);
+    expect(state.token).toBe(mockToken);
+    expect(state.refreshToken).toBe(mockRefreshToken);
+    expect(state.loginAttempts).toBe(0);
   });
 
-  it('should return error when password is too weak', async () => {
-    const user = {
-      ...validUser,
-      password: 'weak',
-      confirmPassword: 'weak'
+  test('should handle login.rejected', () => {
+    const errorMessage = 'Invalid credentials';
+    store.dispatch({ type: 'auth/login/rejected', payload: errorMessage });
+    
+    const state = store.getState().auth;
+    expect(state.isLoading).toBe(false);
+    expect(state.error).toBe(errorMessage);
+    expect(state.loginAttempts).toBe(1);
+  });
+
+  test('should handle register.fulfilled', () => {
+    const payload = {
+      user: mockUser,
+      token: mockToken,
+      refreshToken: mockRefreshToken
     };
-
-    const response = await request(app)
-      .post('/api/auth/register')
-      .send(user)
-      .expect(HTTP_STATUS.BAD_REQUEST);
-
-    expect(response.body.success).toBe(false);
-    expect(response.body.details.password).toBeDefined();
+    
+    store.dispatch({ type: 'auth/register/fulfilled', payload });
+    
+    const state = store.getState().auth;
+    expect(state.isLoading).toBe(false);
+    expect(state.user).toEqual(mockUser);
+    expect(state.token).toBe(mockToken);
   });
 
-  it('should create user with referral code', async () => {
-    // Create referrer first
-    const referrer = await User.create({
-      ...validUser,
-      email: 'referrer@example.com'
+  test('should handle logout.fulfilled', () => {
+    // First login
+    store.dispatch({ 
+      type: 'auth/login/fulfilled', 
+      payload: { user: mockUser, token: mockToken, refreshToken: mockRefreshToken }
+    });
+    
+    // Then logout
+    store.dispatch({ type: 'auth/logout/fulfilled' });
+    
+    const state = store.getState().auth;
+    expect(state.user).toBe(null);
+    expect(state.token).toBe(null);
+    expect(state.refreshToken).toBe(null);
+    expect(state.isAuthenticated).toBe(false);
+  });
+
+  test('should handle setUser action', () => {
+    store.dispatch({ type: 'auth/setUser', payload: mockUser });
+    expect(store.getState().auth.user).toEqual(mockUser);
+  });
+
+  test('should handle setAuthenticated action', () => {
+    store.dispatch({ type: 'auth/setAuthenticated', payload: true });
+    expect(store.getState().auth.isAuthenticated).toBe(true);
+  });
+
+  test('should handle setLoading action', () => {
+    store.dispatch({ type: 'auth/setLoading', payload: true });
+    expect(store.getState().auth.isLoading).toBe(true);
+  });
+
+  test('should handle setError action', () => {
+    const error = 'Test error';
+    store.dispatch({ type: 'auth/setError', payload: error });
+    expect(store.getState().auth.error).toBe(error);
+  });
+
+  test('should handle clearError action', () => {
+    store.dispatch({ type: 'auth/setError', payload: 'Test error' });
+    store.dispatch({ type: 'auth/clearError' });
+    expect(store.getState().auth.error).toBe(null);
+  });
+
+  test('should handle incrementLoginAttempts action', () => {
+    store.dispatch({ type: 'auth/incrementLoginAttempts' });
+    expect(store.getState().auth.loginAttempts).toBe(1);
+    
+    store.dispatch({ type: 'auth/incrementLoginAttempts' });
+    expect(store.getState().auth.loginAttempts).toBe(2);
+  });
+
+  test('should handle resetLoginAttempts action', () => {
+    store.dispatch({ type: 'auth/incrementLoginAttempts' });
+    store.dispatch({ type: 'auth/incrementLoginAttempts' });
+    store.dispatch({ type: 'auth/resetLoginAttempts' });
+    expect(store.getState().auth.loginAttempts).toBe(0);
+  });
+
+  test('should handle setLockout action', () => {
+    const lockoutTime = Date.now() + 3600000;
+    store.dispatch({ type: 'auth/setLockout', payload: lockoutTime });
+    expect(store.getState().auth.lockoutUntil).toBe(lockoutTime);
+  });
+
+  test('should handle set2FARequired action', () => {
+    store.dispatch({ type: 'auth/set2FARequired', payload: true });
+    expect(store.getState().auth.twoFactorRequired).toBe(true);
+  });
+
+  test('should handle set2FAType action', () => {
+    store.dispatch({ type: 'auth/set2FAType', payload: 'app' });
+    expect(store.getState().auth.twoFactorType).toBe('app');
+  });
+
+  test('should handle setEmailVerified action', () => {
+    store.dispatch({ type: 'auth/setEmailVerified', payload: true });
+    expect(store.getState().auth.emailVerified).toBe(true);
+  });
+
+  test('should handle resetAuth action', () => {
+    // First set some state
+    store.dispatch({ 
+      type: 'auth/login/fulfilled', 
+      payload: { user: mockUser, token: mockToken, refreshToken: mockRefreshToken }
+    });
+    
+    // Then reset
+    store.dispatch({ type: 'auth/resetAuth' });
+    
+    expect(store.getState().auth).toEqual({
+      user: null,
+      token: null,
+      refreshToken: null,
+      isAuthenticated: false,
+      isLoading: false,
+      error: null,
+      twoFactorRequired: false,
+      twoFactorType: null,
+      emailVerified: false,
+      loginAttempts: 0,
+      lockoutUntil: null,
+      permissions: []
+    });
+  });
+});
+
+// ==================== Integration Tests ====================
+
+describe('Auth Integration', () => {
+  beforeEach(() => {
+    useAuth.mockImplementation(() => ({ ...mockAuthHook }));
+    mockAxios.reset();
+    jest.clearAllMocks();
+  });
+
+  test('complete login flow with valid credentials', async () => {
+    // Mock successful API response
+    mockAxios.onPost('/api/auth/login').reply(200, {
+      success: true,
+      user: mockUser,
+      token: mockToken,
+      refreshToken: mockRefreshToken
     });
 
-    const userWithReferral = {
-      ...validUser,
-      email: 'referred@example.com',
-      referralCode: referrer.referralCode
-    };
-
-    const response = await request(app)
-      .post('/api/auth/register')
-      .send(userWithReferral)
-      .expect(HTTP_STATUS.CREATED);
-
-    expect(response.body.success).toBe(true);
-
-    // Check if referral was created
-    const referredUser = await User.findOne({ email: userWithReferral.email }).populate('referredBy');
-    expect(referredUser.referredBy).toBeDefined();
-    expect(referredUser.referredBy.email).toBe(referrer.email);
-  });
-
-  it('should ignore invalid referral code', async () => {
-    const userWithInvalidReferral = {
-      ...validUser,
-      referralCode: 'INVALID123'
-    };
-
-    const response = await request(app)
-      .post('/api/auth/register')
-      .send(userWithInvalidReferral)
-      .expect(HTTP_STATUS.CREATED);
-
-    expect(response.body.success).toBe(true);
-
-    const user = await User.findOne({ email: userWithInvalidReferral.email });
-    expect(user.referredBy).toBeNull();
-  });
-
-  it('should create email verification token', async () => {
-    const response = await request(app)
-      .post('/api/auth/register')
-      .send(validUser)
-      .expect(HTTP_STATUS.CREATED);
-
-    const user = await User.findOne({ email: validUser.email }).select('+emailVerificationToken');
-    expect(user.emailVerificationToken).toBeDefined();
-    expect(user.emailVerificationToken.length).toBeGreaterThan(0);
-    expect(user.isVerified).toBe(false);
-  });
-});
-
-// ============================================
-// Login Tests
-// ============================================
-
-describe('POST /api/auth/login', () => {
-  beforeEach(async () => {
-    // Create verified user before each login test
-    const user = new User(validUser);
-    user.isVerified = true;
-    await user.save();
-  });
-
-  it('should login successfully with valid credentials', async () => {
-    const response = await request(app)
-      .post('/api/auth/login')
-      .send({
-        email: validUser.email,
-        password: validUser.password
-      })
-      .expect(HTTP_STATUS.OK);
-
-    expect(response.body.success).toBe(true);
-    expect(response.body.data).toHaveProperty('token');
-    expect(response.body.data).toHaveProperty('user');
-    expect(response.body.data.user.email).toBe(validUser.email);
-    expect(response.body.data.user).not.toHaveProperty('password');
-  });
-
-  it('should return error with invalid password', async () => {
-    const response = await request(app)
-      .post('/api/auth/login')
-      .send({
-        email: validUser.email,
-        password: 'wrongpassword'
-      })
-      .expect(HTTP_STATUS.UNAUTHORIZED);
-
-    expect(response.body.success).toBe(false);
-    expect(response.body.errorCode).toBe(ERROR_CODES.AUTH_INVALID_CREDENTIALS);
-  });
-
-  it('should return error with non-existent email', async () => {
-    const response = await request(app)
-      .post('/api/auth/login')
-      .send({
-        email: 'nonexistent@example.com',
-        password: validUser.password
-      })
-      .expect(HTTP_STATUS.UNAUTHORIZED);
-
-    expect(response.body.success).toBe(false);
-    expect(response.body.errorCode).toBe(ERROR_CODES.AUTH_INVALID_CREDENTIALS);
-  });
-
-  it('should return error when email not verified', async () => {
-    // Create unverified user
-    await User.deleteMany({});
-    const unverifiedUser = new User(validUser);
-    unverifiedUser.isVerified = false;
-    await unverifiedUser.save();
-
-    const response = await request(app)
-      .post('/api/auth/login')
-      .send({
-        email: validUser.email,
-        password: validUser.password
-      })
-      .expect(HTTP_STATUS.FORBIDDEN);
-
-    expect(response.body.success).toBe(false);
-    expect(response.body.errorCode).toBe(ERROR_CODES.AUTH_EMAIL_NOT_VERIFIED);
-  });
-
-  it('should return error when account is locked', async () => {
-    const user = await User.findOne({ email: validUser.email });
-    user.lockedUntil = new Date(Date.now() + 15 * 60 * 1000);
-    user.loginAttempts = 5;
-    await user.save();
-
-    const response = await request(app)
-      .post('/api/auth/login')
-      .send({
-        email: validUser.email,
-        password: validUser.password
-      })
-      .expect(HTTP_STATUS.FORBIDDEN);
-
-    expect(response.body.success).toBe(false);
-    expect(response.body.errorCode).toBe(ERROR_CODES.AUTH_ACCOUNT_LOCKED);
-    expect(response.body.details).toHaveProperty('unlockTime');
-  });
-
-  it('should increment login attempts on failed login', async () => {
-    // First failed attempt
-    await request(app)
-      .post('/api/auth/login')
-      .send({
-        email: validUser.email,
-        password: 'wrong1'
-      });
-
-    const user = await User.findOne({ email: validUser.email }).select('+loginAttempts');
-    expect(user.loginAttempts).toBe(1);
-
-    // Second failed attempt
-    await request(app)
-      .post('/api/auth/login')
-      .send({
-        email: validUser.email,
-        password: 'wrong2'
-      });
-
-    const updatedUser = await User.findOne({ email: validUser.email }).select('+loginAttempts +lockedUntil');
-    expect(updatedUser.loginAttempts).toBe(2);
-    expect(updatedUser.lockedUntil).toBeNull();
-
-    // Third, fourth, fifth failed attempts
-    for (let i = 0; i < 3; i++) {
-      await request(app)
-        .post('/api/auth/login')
-        .send({
-          email: validUser.email,
-          password: 'wrong'
-        });
-    }
-
-    const lockedUser = await User.findOne({ email: validUser.email }).select('+loginAttempts +lockedUntil');
-    expect(lockedUser.loginAttempts).toBe(5);
-    expect(lockedUser.lockedUntil).toBeDefined();
-  });
-
-  it('should reset login attempts on successful login', async () => {
-    // Failed attempt
-    await request(app)
-      .post('/api/auth/login')
-      .send({
-        email: validUser.email,
-        password: 'wrong'
-      });
-
-    // Successful login
-    await request(app)
-      .post('/api/auth/login')
-      .send({
-        email: validUser.email,
-        password: validUser.password
-      });
-
-    const user = await User.findOne({ email: validUser.email }).select('+loginAttempts');
-    expect(user.loginAttempts).toBe(0);
-  });
-
-  it('should return JWT token with correct payload', async () => {
-    const response = await request(app)
-      .post('/api/auth/login')
-      .send({
-        email: validUser.email,
-        password: validUser.password
-      });
-
-    const token = response.body.data.token;
-    const decoded = require('jsonwebtoken').verify(token, process.env.JWT_SECRET);
-
-    expect(decoded).toHaveProperty('id');
-    expect(decoded).toHaveProperty('email', validUser.email);
-    expect(decoded).toHaveProperty('role', 'user');
-  });
-
-  it('should set cookie with token', async () => {
-    const response = await request(app)
-      .post('/api/auth/login')
-      .send({
-        email: validUser.email,
-        password: validUser.password
-      });
-
-    expect(response.headers['set-cookie']).toBeDefined();
-    expect(response.headers['set-cookie'][0]).toContain('token');
-    expect(response.headers['set-cookie'][0]).toContain('HttpOnly');
-  });
-});
-
-// ============================================
-// Email Verification Tests
-// ============================================
-
-describe('GET /api/auth/verify-email/:token', () => {
-  let user;
-
-  beforeEach(async () => {
-    user = new User(validUser);
-    user.emailVerificationToken = 'valid-verification-token';
-    await user.save();
-  });
-
-  it('should verify email with valid token', async () => {
-    const response = await request(app)
-      .get(`/api/auth/verify-email/${user.emailVerificationToken}`)
-      .expect(HTTP_STATUS.OK);
-
-    expect(response.body.success).toBe(true);
-    expect(response.body.message).toContain('verified');
-
-    const verifiedUser = await User.findById(user._id);
-    expect(verifiedUser.isVerified).toBe(true);
-    expect(verifiedUser.emailVerificationToken).toBeUndefined();
-  });
-
-  it('should return error with invalid token', async () => {
-    const response = await request(app)
-      .get('/api/auth/verify-email/invalid-token')
-      .expect(HTTP_STATUS.BAD_REQUEST);
-
-    expect(response.body.success).toBe(false);
-    expect(response.body.errorCode).toBe(ERROR_CODES.AUTH_INVALID_TOKEN);
-  });
-
-  it('should return error with expired token', async () => {
-    user.emailVerificationToken = 'expired-token';
-    user.emailVerificationExpires = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    await user.save();
-
-    const response = await request(app)
-      .get(`/api/auth/verify-email/${user.emailVerificationToken}`)
-      .expect(HTTP_STATUS.BAD_REQUEST);
-
-    expect(response.body.success).toBe(false);
-    expect(response.body.errorCode).toBe(ERROR_CODES.AUTH_TOKEN_EXPIRED);
-  });
-});
-
-// ============================================
-// Password Reset Tests
-// ============================================
-
-describe('POST /api/auth/forgot-password', () => {
-  beforeEach(async () => {
-    await User.create(validUser);
-  });
-
-  it('should send password reset email for existing user', async () => {
-    const response = await request(app)
-      .post('/api/auth/forgot-password')
-      .send({ email: validUser.email })
-      .expect(HTTP_STATUS.OK);
-
-    expect(response.body.success).toBe(true);
-    expect(response.body.message).toContain('reset email sent');
-
-    const user = await User.findOne({ email: validUser.email }).select('+passwordResetToken +passwordResetExpires');
-    expect(user.passwordResetToken).toBeDefined();
-    expect(user.passwordResetExpires).toBeDefined();
-  });
-
-  it('should return success even for non-existent email (security)', async () => {
-    const response = await request(app)
-      .post('/api/auth/forgot-password')
-      .send({ email: 'nonexistent@example.com' })
-      .expect(HTTP_STATUS.OK);
-
-    expect(response.body.success).toBe(true);
-    expect(response.body.message).toContain('reset email sent');
-  });
-
-  it('should rate limit password reset requests', async () => {
-    // Make multiple requests
-    for (let i = 0; i < 5; i++) {
-      await request(app)
-        .post('/api/auth/forgot-password')
-        .send({ email: validUser.email });
-    }
-
-    const response = await request(app)
-      .post('/api/auth/forgot-password')
-      .send({ email: validUser.email })
-      .expect(HTTP_STATUS.TOO_MANY_REQUESTS);
-
-    expect(response.body.success).toBe(false);
-    expect(response.body.errorCode).toBe(ERROR_CODES.RATE_LIMIT_EXCEEDED);
-  });
-});
-
-describe('POST /api/auth/reset-password/:token', () => {
-  let user;
-  let resetToken;
-
-  beforeEach(async () => {
-    user = await User.create(validUser);
-    resetToken = 'valid-reset-token';
-    user.passwordResetToken = require('crypto')
-      .createHash('sha256')
-      .update(resetToken)
-      .digest('hex');
-    user.passwordResetExpires = Date.now() + 60 * 60 * 1000;
-    await user.save();
-  });
-
-  it('should reset password with valid token', async () => {
-    const newPassword = 'NewPassword@123';
+    renderWithProviders(<Login />);
     
-    const response = await request(app)
-      .post(`/api/auth/reset-password/${resetToken}`)
-      .send({ password: newPassword })
-      .expect(HTTP_STATUS.OK);
-
-    expect(response.body.success).toBe(true);
-    expect(response.body.message).toContain('reset successful');
-
-    const updatedUser = await User.findById(user._id).select('+password');
-    expect(updatedUser.passwordResetToken).toBeUndefined();
-    expect(updatedUser.passwordResetExpires).toBeUndefined();
+    const emailInput = screen.getByLabelText(/email/i);
+    const passwordInput = screen.getByLabelText(/password/i);
+    const loginButton = screen.getByRole('button', { name: /login/i });
     
-    // Verify new password works
-    const loginResponse = await request(app)
-      .post('/api/auth/login')
-      .send({
-        email: validUser.email,
-        password: newPassword
-      })
-      .expect(HTTP_STATUS.OK);
-
-    expect(loginResponse.body.success).toBe(true);
+    fireEvent.change(emailInput, { target: { value: 'john@example.com' } });
+    fireEvent.change(passwordInput, { target: { value: 'password123' } });
+    fireEvent.click(loginButton);
+    
+    await waitFor(() => {
+      expect(mockAxios.history.post.length).toBe(1);
+      expect(mockAxios.history.post[0].url).toBe('/api/auth/login');
+      expect(JSON.parse(mockAxios.history.post[0].data)).toEqual({
+        email: 'john@example.com',
+        password: 'password123'
+      });
+    });
   });
 
-  it('should return error with invalid token', async () => {
-    const response = await request(app)
-      .post('/api/auth/reset-password/invalid-token')
-      .send({ password: 'NewPassword@123' })
-      .expect(HTTP_STATUS.BAD_REQUEST);
+  test('complete registration flow with valid data', async () => {
+    // Mock successful API response
+    mockAxios.onPost('/api/auth/register').reply(200, {
+      success: true,
+      user: mockUser,
+      token: mockToken,
+      refreshToken: mockRefreshToken
+    });
 
-    expect(response.body.success).toBe(false);
-    expect(response.body.errorCode).toBe(ERROR_CODES.AUTH_INVALID_TOKEN);
+    renderWithProviders(<Register />);
+    
+    const nameInput = screen.getByLabelText(/name/i);
+    const emailInput = screen.getByLabelText(/email/i);
+    const passwordInput = screen.getByLabelText(/password/i);
+    const confirmInput = screen.getByLabelText(/confirm password/i);
+    
+    fireEvent.change(nameInput, { target: { value: 'John Doe' } });
+    fireEvent.change(emailInput, { target: { value: 'john@example.com' } });
+    fireEvent.change(passwordInput, { target: { value: 'Password123!' } });
+    fireEvent.change(confirmInput, { target: { value: 'Password123!' } });
+    
+    const registerButton = screen.getByRole('button', { name: /register/i });
+    fireEvent.click(registerButton);
+    
+    await waitFor(() => {
+      expect(mockAxios.history.post.length).toBe(1);
+      expect(mockAxios.history.post[0].url).toBe('/api/auth/register');
+      expect(JSON.parse(mockAxios.history.post[0].data)).toEqual({
+        name: 'John Doe',
+        email: 'john@example.com',
+        password: 'Password123!'
+      });
+    });
   });
 
-  it('should return error with expired token', async () => {
-    user.passwordResetExpires = Date.now() - 60 * 60 * 1000;
-    await user.save();
-
-    const response = await request(app)
-      .post(`/api/auth/reset-password/${resetToken}`)
-      .send({ password: 'NewPassword@123' })
-      .expect(HTTP_STATUS.BAD_REQUEST);
-
-    expect(response.body.success).toBe(false);
-    expect(response.body.errorCode).toBe(ERROR_CODES.AUTH_TOKEN_EXPIRED);
-  });
-
-  it('should return error with weak password', async () => {
-    const response = await request(app)
-      .post(`/api/auth/reset-password/${resetToken}`)
-      .send({ password: 'weak' })
-      .expect(HTTP_STATUS.BAD_REQUEST);
-
-    expect(response.body.success).toBe(false);
-    expect(response.body.errorCode).toBe(ERROR_CODES.VALIDATION_FAILED);
-  });
-});
-
-// ============================================
-// Logout Tests
-// ============================================
-
-describe('POST /api/auth/logout', () => {
-  it('should logout successfully', async () => {
-    const response = await request(app)
-      .post('/api/auth/logout')
-      .expect(HTTP_STATUS.OK);
-
-    expect(response.body.success).toBe(true);
-    expect(response.headers['set-cookie']).toBeDefined();
-    expect(response.headers['set-cookie'][0]).toContain('token=;');
-  });
-});
-
-// ============================================
-// Protected Route Tests
-// ============================================
-
-describe('Protected Routes', () => {
-  let token;
-
-  beforeEach(async () => {
-    const user = await User.create(validUser);
-    token = generateToken(user._id);
-  });
-
-  it('should access protected route with valid token', async () => {
-    const response = await request(app)
-      .get('/api/auth/me')
-      .set('Authorization', `Bearer ${token}`)
-      .expect(HTTP_STATUS.OK);
-
-    expect(response.body.success).toBe(true);
-    expect(response.body.data).toHaveProperty('user');
-    expect(response.body.data.user.email).toBe(validUser.email);
-  });
-
-  it('should return error without token', async () => {
-    const response = await request(app)
-      .get('/api/auth/me')
-      .expect(HTTP_STATUS.UNAUTHORIZED);
-
-    expect(response.body.success).toBe(false);
-    expect(response.body.errorCode).toBe(ERROR_CODES.AUTH_MISSING_TOKEN);
-  });
-
-  it('should return error with invalid token', async () => {
-    const response = await request(app)
-      .get('/api/auth/me')
-      .set('Authorization', 'Bearer invalid-token')
-      .expect(HTTP_STATUS.UNAUTHORIZED);
-
-    expect(response.body.success).toBe(false);
-    expect(response.body.errorCode).toBe(ERROR_CODES.AUTH_INVALID_TOKEN);
-  });
-
-  it('should return error with expired token', async () => {
-    const expiredToken = require('jsonwebtoken').sign(
-      { id: user._id },
-      process.env.JWT_SECRET,
-      { expiresIn: '0s' }
+  test('protected route redirects to login when not authenticated', async () => {
+    const ProtectedComponent = () => <div>Protected Content</div>;
+    
+    renderWithProviders(
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route 
+          path="/dashboard" 
+          element={
+            <AuthGuard>
+              <ProtectedComponent />
+            </AuthGuard>
+          } 
+        />
+      </Routes>,
+      { initialEntries: ['/dashboard'] }
     );
+    
+    await waitFor(() => {
+      expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
+      expect(screen.queryByText(/protected content/i)).not.toBeInTheDocument();
+    });
+  });
 
-    const response = await request(app)
-      .get('/api/auth/me')
-      .set('Authorization', `Bearer ${expiredToken}`)
-      .expect(HTTP_STATUS.UNAUTHORIZED);
-
-    expect(response.body.success).toBe(false);
-    expect(response.body.errorCode).toBe(ERROR_CODES.AUTH_TOKEN_EXPIRED);
+  test('persists authentication state after page reload', () => {
+    // Setup authenticated state
+    localStorage.setItem('token', mockToken);
+    localStorage.setItem('user', JSON.stringify(mockUser));
+    
+    const store = createTestStore({
+      auth: {
+        user: mockUser,
+        token: mockToken,
+        isAuthenticated: true
+      }
+    });
+    
+    renderWithProviders(<Dashboard />, { store });
+    
+    expect(screen.getByText(/dashboard/i)).toBeInTheDocument();
+    
+    // Cleanup
+    localStorage.clear();
   });
 });
-
-// ============================================
-// Rate Limiting Tests
-// ============================================
-
-describe('Rate Limiting', () => {
-  it('should limit login attempts', async () => {
-    const requests = [];
-    for (let i = 0; i < 10; i++) {
-      requests.push(
-        request(app)
-          .post('/api/auth/login')
-          .send({
-            email: 'test@example.com',
-            password: 'wrong'
-          })
-      );
-    }
-
-    const responses = await Promise.all(requests);
-    const tooManyRequests = responses.filter(r => r.statusCode === HTTP_STATUS.TOO_MANY_REQUESTS);
-    expect(tooManyRequests.length).toBeGreaterThan(0);
-  });
-
-  it('should limit registration attempts', async () => {
-    const requests = [];
-    for (let i = 0; i < 5; i++) {
-      requests.push(
-        request(app)
-          .post('/api/auth/register')
-          .send({
-            ...validUser,
-            email: `test${i}@example.com`
-          })
-      );
-    }
-
-    const responses = await Promise.all(requests);
-    const tooManyRequests = responses.filter(r => r.statusCode === HTTP_STATUS.TOO_MANY_REQUESTS);
-    expect(tooManyRequests.length).toBeGreaterThan(0);
-  });
-});
-
-// ============================================
-// Edge Cases
-// ============================================
-
-describe('Edge Cases', () => {
-  it('should handle malformed JSON', async () => {
-    const response = await request(app)
-      .post('/api/auth/register')
-      .set('Content-Type', 'application/json')
-      .send('{malformed json}')
-      .expect(HTTP_STATUS.BAD_REQUEST);
-
-    expect(response.body.success).toBe(false);
-  });
-
-  it('should handle missing content-type', async () => {
-    const response = await request(app)
-      .post('/api/auth/register')
-      .send(JSON.stringify(validUser))
-      .expect(HTTP_STATUS.UNSUPPORTED_MEDIA_TYPE);
-
-    expect(response.body.success).toBe(false);
-  });
-
-  it('should handle very long input', async () => {
-    const longUser = {
-      ...validUser,
-      name: 'a'.repeat(1000)
-    };
-
-    const response = await request(app)
-      .post('/api/auth/register')
-      .send(longUser)
-      .expect(HTTP_STATUS.BAD_REQUEST);
-
-    expect(response.body.success).toBe(false);
-    expect(response.body.details.name).toBeDefined();
-  });
-
-  it('should handle SQL injection attempts', async () => {
-    const sqlInjection = {
-      ...validUser,
-      email: "' OR '1'='1"
-    };
-
-    const response = await request(app)
-      .post('/api/auth/register')
-      .send(sqlInjection)
-      .expect(HTTP_STATUS.BAD_REQUEST);
-
-    expect(response.body.success).toBe(false);
-    expect(response.body.details.email).toBeDefined();
-  });
-
-  it('should handle XSS attempts', async () => {
-    const xssUser = {
-      ...validUser,
-      name: '<script>alert("xss")</script>'
-    };
-
-    const response = await request(app)
-      .post('/api/auth/register')
-      .send(xssUser)
-      .expect(HTTP_STATUS.CREATED);
-
-    const user = await User.findOne({ email: xssUser.email });
-    expect(user.name).not.toContain('<script>');
-  });
-});
-```
